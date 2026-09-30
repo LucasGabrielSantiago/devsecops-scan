@@ -12,8 +12,16 @@ RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 # nosemgrep
 FROM python:3.12-slim
 
-# pip atualizado (o pip da imagem base costuma ter CVEs conhecidas)
-RUN pip install --no-cache-dir --upgrade pip
+# Hardening da imagem final:
+#  - aplica os patches de segurança do Debian (ex.: OpenSSL), apontados pelo Trivy;
+#  - remove o pip: a aplicação não precisa dele em execução e ele carrega
+#    bibliotecas vendorizadas com CVEs (urllib3, msgpack, setuptools).
+# nosemgrep
+RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* \
+    && python -m pip uninstall -y pip
 
 # Usuário sem privilégios (o container não roda como root)
 RUN useradd --create-home --uid 10001 appuser
