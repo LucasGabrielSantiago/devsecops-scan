@@ -1,6 +1,6 @@
 # ---------- Etapa 1: instala dependências ----------
 # nosemgrep
-FROM python:3.12-slim AS build
+FROM python:3.14-slim AS build
 WORKDIR /build
 COPY requirements.txt .
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
@@ -10,7 +10,7 @@ RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 # segurança da imagem oficial; a imagem é reconstruída e analisada pelo
 # Trivy a cada push, o que barra CVEs HIGH/CRITICAL antes do deploy.
 # nosemgrep
-FROM python:3.12-slim
+FROM python:3.14-slim
 
 # pip atualizado (o pip da imagem base costuma ter CVEs conhecidas)
 RUN pip install --no-cache-dir --upgrade pip
