@@ -1,0 +1,6 @@
+# Código de demonstração propositalmente vulnerável (só entra na análise
+# quando o script demo/aplicar-falhas.sh o copia para src/app/)
+demo/
+
+# Testes não vão para produção
+tests/

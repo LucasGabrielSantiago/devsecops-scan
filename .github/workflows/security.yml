@@ -1,0 +1,301 @@
+name: DevSecOps - Security Pipeline
+
+# ---------------------------------------------------------------------------
+# Gatilhos: qualquer push ou pull request dispara a análise de segurança.
+# workflow_dispatch permite rodar manualmente pela aba Actions.
+# ---------------------------------------------------------------------------
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE: api-tarefas:${{ github.sha }}
+  PYTHON_VERSION: "3.12"
+  TRIVY_VERSION: "0.69.3"   # versão verificada após o incidente de supply chain de mar/2026
+
+jobs:
+  # =========================================================================
+  # 0. TESTES — garante que a aplicação funciona antes de analisá-la
+  # =========================================================================
+  testes:
+    name: "0. Testes unitários"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - run: pytest -v
+
+  # =========================================================================
+  # 1. SAST — Semgrep analisa o código-fonte sem executá-lo
+  # =========================================================================
+  sast:
+    name: "1. SAST (Semgrep)"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write   # publica o SARIF na aba Security
+    container:
+      image: semgrep/semgrep
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Semgrep scan
+        run: |
+          semgrep scan \
+            --config p/python \
+            --config p/owasp-top-ten \
+            --config p/secrets \
+            --metrics=off \
+            --error \
+            --sarif-output=semgrep.sarif \
+            --text-output=semgrep.txt
+
+      - name: Resumo no GitHub
+        if: always()
+        run: |
+          echo "## 🔎 SAST — Semgrep" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          tail -n 60 semgrep.txt >> "$GITHUB_STEP_SUMMARY" || echo "sem saída" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publica resultado na aba Security (Code scanning)
+        if: always()
+        continue-on-error: true   # repositórios privados sem GHAS não suportam upload de SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: relatorio-sast-semgrep
+          path: |
+            semgrep.sarif
+            semgrep.txt
+
+  # =========================================================================
+  # 2. SCA — pip-audit (+ Dependency Review em PRs) analisa as dependências
+  # =========================================================================
+  sca:
+    name: "2. SCA (pip-audit)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - run: pip install pip-audit
+
+      - name: pip-audit (CVEs nas dependências)
+        run: |
+          set -o pipefail
+          pip-audit -r requirements.txt --desc on -f markdown -o pip-audit.md || STATUS=$?
+          pip-audit -r requirements.txt -f json -o pip-audit.json || true
+          echo "## 📦 SCA — pip-audit" >> "$GITHUB_STEP_SUMMARY"
+          if [ -s pip-audit.md ]; then cat pip-audit.md >> "$GITHUB_STEP_SUMMARY"; else echo "✅ Nenhuma vulnerabilidade conhecida." >> "$GITHUB_STEP_SUMMARY"; fi
+          exit ${STATUS:-0}
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: relatorio-sca-pip-audit
+          path: pip-audit.*
+
+  dependency-review:
+    name: "2b. SCA (Dependency Review)"
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: always
+
+  # =========================================================================
+  # 3. IaC — Checkov analisa Terraform e Dockerfile (desafio opcional)
+  # =========================================================================
+  iac:
+    name: "3. IaC Scan (Checkov)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install checkov
+
+      - name: Checkov (Terraform + Dockerfile)
+        run: |
+          STATUS=0
+          checkov -d terraform --framework terraform --compact --quiet > checkov-terraform.txt || STATUS=1
+          checkov -f Dockerfile --framework dockerfile --compact --quiet > checkov-dockerfile.txt || STATUS=1
+          cat checkov-terraform.txt checkov-dockerfile.txt
+          exit $STATUS
+
+      - name: Resumo no GitHub
+        if: always()
+        run: |
+          echo "## 🏗️ IaC — Checkov" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          grep -hE "scan results|Passed checks|Check:" checkov-*.txt >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: relatorio-iac-checkov
+          path: checkov-*.txt
+
+  # =========================================================================
+  # 4. Docker Build + Trivy — analisa a imagem antes de qualquer deploy
+  # =========================================================================
+  imagem:
+    name: "4. Docker Build + Trivy"
+    needs: testes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build da imagem
+        run: docker build -t "$IMAGE" .
+
+      - name: Trivy (vulnerabilidades e segredos na imagem)
+        run: |
+          set -o pipefail
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$HOME/.cache/trivy:/root/.cache/" \
+            "aquasec/trivy:${TRIVY_VERSION}" image \
+              --scanners vuln,secret \
+              --severity HIGH,CRITICAL \
+              --ignore-unfixed \
+              --exit-code 1 \
+              --no-progress \
+              "$IMAGE" | tee trivy.txt
+
+      - name: Resumo no GitHub
+        if: always()
+        run: |
+          echo "## 🐳 Imagem — Trivy" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          head -n 80 trivy.txt >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Exporta a imagem para o job de DAST
+        if: always()
+        run: docker save "$IMAGE" -o imagem.tar
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: imagem-docker
+          path: imagem.tar
+          retention-days: 1
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: relatorio-imagem-trivy
+          path: trivy.txt
+
+  # =========================================================================
+  # 5. DAST — OWASP ZAP ataca a aplicação em execução
+  # =========================================================================
+  dast:
+    name: "5. DAST (OWASP ZAP)"
+    needs: imagem
+    if: ${{ !cancelled() && needs.imagem.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: imagem-docker
+
+      - name: Sobe a aplicação
+        run: |
+          docker load -i imagem.tar
+          docker run -d --name api -p 8000:8000 "$IMAGE"
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:8000/health && exit 0
+            sleep 2
+          done
+          echo "Aplicação não subiu"; docker logs api; exit 1
+
+      - name: OWASP ZAP API Scan (ataque guiado pelo OpenAPI)
+        uses: zaproxy/action-api-scan@v0.10.0
+        with:
+          target: http://localhost:8000/openapi.json
+          format: openapi
+          rules_file_name: .zap/rules.tsv
+          cmd_options: "-I"          # alertas WARN aparecem no relatório; só regras FAIL quebram a pipeline
+          fail_action: true
+          allow_issue_writing: false
+          artifact_name: relatorio-dast-zap
+
+      - name: Logs da aplicação
+        if: always()
+        run: docker logs api || true
+
+  # =========================================================================
+  # 6. RESULTADO — consolida tudo em PASS / FAIL
+  # =========================================================================
+  resultado:
+    name: "6. Resultado (PASS/FAIL)"
+    if: always()
+    needs: [testes, sast, sca, dependency-review, iac, imagem, dast]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Consolida resultado
+        env:
+          R_TESTES: ${{ needs.testes.result }}
+          R_SAST: ${{ needs.sast.result }}
+          R_SCA: ${{ needs.sca.result }}
+          R_DEPREVIEW: ${{ needs.dependency-review.result }}
+          R_IAC: ${{ needs.iac.result }}
+          R_IMAGEM: ${{ needs.imagem.result }}
+          R_DAST: ${{ needs.dast.result }}
+        run: |
+          icone() { case "$1" in success) echo "✅ PASS";; skipped) echo "⏭️ n/a";; *) echo "❌ FAIL";; esac; }
+          {
+            echo "## 🛡️ Resultado da pipeline de segurança"
+            echo ""
+            echo "| Etapa | Ferramenta | Resultado |"
+            echo "|---|---|---|"
+            echo "| Testes | pytest | $(icone "$R_TESTES") |"
+            echo "| SAST | Semgrep | $(icone "$R_SAST") |"
+            echo "| SCA | pip-audit | $(icone "$R_SCA") |"
+            echo "| SCA (PR) | Dependency Review | $(icone "$R_DEPREVIEW") |"
+            echo "| IaC | Checkov | $(icone "$R_IAC") |"
+            echo "| Imagem | Trivy | $(icone "$R_IMAGEM") |"
+            echo "| DAST | OWASP ZAP | $(icone "$R_DAST") |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          for r in "$R_TESTES" "$R_SAST" "$R_SCA" "$R_DEPREVIEW" "$R_IAC" "$R_IMAGEM" "$R_DAST"; do
+            if [ "$r" != "success" ] && [ "$r" != "skipped" ]; then
+              echo "::error::Pipeline de segurança REPROVADA (FAIL)"
+              exit 1
+            fi
+          done
+          echo "Pipeline de segurança APROVADA (PASS)"
