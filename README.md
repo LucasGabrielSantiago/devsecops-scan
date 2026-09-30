@@ -156,8 +156,8 @@ O script [`demo/aplicar-falhas.sh`](demo/aplicar-falhas.sh) adiciona:
 | SQL montado com f-string (`/inseguro/busca`) | CWE-89 SQL Injection | Semgrep, ZAP |
 | `subprocess.run(..., shell=True)` com entrada do usuário (`/inseguro/ping`) | CWE-78 Command Injection | Semgrep, ZAP |
 | `eval()` com entrada do usuário (`/inseguro/calc`) | CWE-95 Code Injection | Semgrep |
-| Chave de API hardcoded | CWE-798 Segredo no código | Semgrep (`p/secrets`), Trivy |
-| `requests==2.19.1` | Dependência com CVEs | pip-audit, Dependency Review, Trivy |
+| `requests==2.25.1` | Dependência com CVEs | pip-audit, Dependency Review, Trivy |
+
 ### Camada extra: GitHub Push Protection 🔐
 
 Na primeira tentativa de push, o código de demonstração tinha uma chave de API no formato Stripe (`sk_live_…`).
@@ -165,11 +165,21 @@ O **GitHub Secret Scanning com Push Protection** recusou o push (`GH013: Push ca
 **antes mesmo de a pipeline rodar**: o segredo nunca chegou ao repositório remoto.
 A correção foi remover o segredo e reescrever o commit, e não liberar a exceção.
 
-![Push Protection](docs/evidencias/00-push-protection.png)
+Saída do `git push` (trecho):
+
+```
+remote: error: GH013: Repository rule violations found for refs/heads/main.
+remote: - GITHUB PUSH PROTECTION
+remote:     - Push cannot contain secrets
+remote:       —— Stripe API Key ——————————————————
+remote:        locations:
+remote:          - path: demo/rotas_inseguras.py:16
+ ! [remote rejected] main -> main (push declined due to repository rule violations)
+```
 
 ### Resultado obtido — cenário FAIL ❌
 
-**SAST (Semgrep)**, com 5 findings bloqueantes:
+**SAST (Semgrep)**: na pipeline, o Semgrep bloqueou o `subprocess.run(..., shell=True)` e comentou direto na linha do PR. Rodando o conjunto completo de regras Python do Semgrep localmente, o código injetado gera estes findings:
 
 ```
 python.lang.security.audit.formatted-sql-query            → SQL injection
@@ -184,9 +194,9 @@ Findings: 5 (5 blocking)
 
 | Pacote | Versão | Nº de vulnerabilidades | Exemplos |
 |---|---|---|---|
-| requests | 2.19.1 | várias | CVE-2018-18074, CVE-2023-32681, CVE-2024-35195 |
-| urllib3 (transitiva) | 1.23 | várias | CVE-2019-11324, CVE-2023-43804 |
-| idna (transitiva) | 2.7 | várias | CVE-2024-3651 |
+| requests | 2.25.1 | várias | CVE-2023-32681, CVE-2024-35195, CVE-2024-47081 |
+| urllib3 (transitiva) | 1.26.20 | várias | CVE-2025-50181, CVE-2026-97687 |
+| idna (transitiva) | 2.10 | várias | CVE-2024-3651 |
 
 > Repare que `urllib3` e `idna` **nem estão no requirements.txt**: são dependências transitivas trazidas pelo `requests`. É exatamente o tipo de risco que o SCA encontra e que a revisão manual deixa passar.
 
@@ -196,10 +206,40 @@ Findings: 5 (5 blocking)
 
 | | |
 |---|---|
-| Pipeline em FAIL | ![Pipeline FAIL](docs/evidencias/01-pipeline-fail.png) |
-| Findings do Semgrep | ![Semgrep](docs/evidencias/02-semgrep-findings.png) |
+| Histórico: PR vulnerável (#24) ❌ × `main` corrigida (#22) ✅ | ![FAIL x PASS](docs/evidencias/01-actions-fail-vs-pass.png) |
+| Jobs reprovados no PR vulnerável | ![Jobs FAIL](docs/evidencias/01b-pipeline-fail-jobs.png) |
+| Semgrep comentando direto no PR | ![Semgrep no PR](docs/evidencias/02-semgrep-findings.png) |
+| Resumo do Semgrep na execução | ![Semgrep summary](docs/evidencias/02b-semgrep-summary.png) |
 | Dependências vulneráveis (pip-audit) | ![pip-audit](docs/evidencias/03-pip-audit.png) |
 | Relatório do ZAP | ![ZAP](docs/evidencias/04-zap-report.png) |
+
+### A pipeline também auditou a si mesma 🔁
+
+Até chegar ao PASS, a pipeline reprovou a própria `main` três vezes, cada uma por um problema real:
+
+| Ferramenta | O que encontrou | Correção |
+|---|---|---|
+| Semgrep | Actions referenciadas por tag mutável (`@v4`), o mesmo vetor do ataque à trivy-action em 2026 | Todas as actions fixadas por SHA de commit |
+| Semgrep | Dependabot sem período de *cooldown* | `cooldown: 7 dias` e PRs apenas de segurança |
+| Trivy | 6 CVEs HIGH no OpenSSL da imagem base e 4 em bibliotecas embutidas no `pip` | Patches do SO aplicados no build e `pip` removido da imagem final |
+
+As falhas do Trivy não aparecem no SAST nem no SCA: só são vistas ao analisar a **imagem final**. Isso mostra o valor da defesa em camadas.
+
+![Semgrep acusando actions com tag mutável](docs/evidencias/06-semgrep-actions-tag-mutavel.png)
+
+Trecho do relatório do Trivy que reprovou a imagem:
+
+```
+api-tarefas (debian 13.7)
+Total: 6 (HIGH: 6, CRITICAL: 0)
+│ libssl3t64 / openssl / openssl-provider-legacy │ CVE-2026-75804, CVE-2026-84782 │ HIGH │ 3.5.7-1~deb13u2 → 3.5.7-1~deb13u3 │
+
+Python (python-pkg)  — bibliotecas embutidas no pip
+Total: 4 (HIGH: 4, CRITICAL: 0)
+│ msgpack    │ GHSA-6v7p-g79w-8964 │ 1.1.2  → 1.2.1  │
+│ setuptools │ CVE-2025-47273      │ 70.3.0 → 78.1.1 │
+│ urllib3    │ CVE-2026-97687, CVE-2026-97689 │ 2.7.0 → 2.8.0 │
+```
 
 ### Resultado obtido — cenário PASS ✅
 

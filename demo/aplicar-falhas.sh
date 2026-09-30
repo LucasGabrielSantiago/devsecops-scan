@@ -23,8 +23,9 @@ EOF
 fi
 
 # 2) Dependência com CVEs conhecidas (SCA + Trivy)
-grep -q "^requests==" requirements.txt || echo "requests==2.19.1" >> requirements.txt
+# (2.25.1 é compatível com as dependências do FastAPI; versões mais antigas conflitam com o idna)
+grep -q "^requests==" requirements.txt || echo "requests==2.25.1" >> requirements.txt
 
 echo "Falhas aplicadas:"
 echo "  - src/app/rotas_inseguras.py (SQLi, command injection, eval, segredo hardcoded)"
-echo "  - requirements.txt: requests==2.19.1 (CVE-2018-18074, CVE-2023-32681, CVE-2024-35195)"
+echo "  - requirements.txt: requests==2.25.1 (CVE-2023-32681, CVE-2024-35195, CVE-2024-47081)"
