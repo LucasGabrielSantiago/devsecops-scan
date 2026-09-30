@@ -214,8 +214,8 @@ O `eval()` foi encontrado pelo ZAP como injeção de código por tempo de respos
 
 | | |
 |---|---|
-| Histórico: PR vulnerável (#24) ❌ × `main` corrigida (#22) ✅ | ![FAIL x PASS](docs/evidencias/01-actions-fail-vs-pass.png) |
-| Jobs reprovados no PR vulnerável | ![Jobs FAIL](docs/evidencias/01b-pipeline-fail-jobs.png) |
+| Histórico: branch vulnerável (#29/#30) ❌ × `main` (#28) ✅ | ![FAIL x PASS](docs/evidencias/01-actions-fail-vs-pass.png) |
+| Jobs reprovados na branch vulnerável: SAST, SCA, Trivy e DAST | ![Jobs FAIL](docs/evidencias/01b-pipeline-fail-jobs.png) |
 | Semgrep comentando direto no PR | ![Semgrep no PR](docs/evidencias/02-semgrep-findings.png) |
 | Resumo do Semgrep na execução | ![Semgrep summary](docs/evidencias/02b-semgrep-summary.png) |
 | Dependências vulneráveis (pip-audit) | ![pip-audit](docs/evidencias/03-pip-audit.png) |
