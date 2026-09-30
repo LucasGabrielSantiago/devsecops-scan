@@ -116,7 +116,7 @@ SAST, SCA e IaC rodam **em paralelo**, logo no início, porque são as análises
 | Dependency Review | dependência nova com severidade **high** ou **critical** |
 | Checkov | qualquer check falhando |
 | Trivy | CVE **HIGH/CRITICAL** com correção disponível, ou segredo na imagem |
-| OWASP ZAP | alerta classificado como `FAIL` em [`.zap/rules.tsv`](.zap/rules.tsv) (SQLi, XSS, command injection, path traversal, XXE…). Os demais alertas ficam como `WARN` no relatório, sem bloquear. |
+| OWASP ZAP | qualquer alerta de risco **High** no relatório (`report_json.json`), verificado por um *gate* explícito na pipeline. Alertas Medium/Low/Info ficam registrados no relatório e no Summary, sem bloquear. |
 
 Quando algum critério é atingido:
 
@@ -155,8 +155,8 @@ O script [`demo/aplicar-falhas.sh`](demo/aplicar-falhas.sh) adiciona:
 | Senha hardcoded (`SENHA_ADMIN`) | CWE-798 Credencial no código | revisão de código (má prática ilustrativa) |
 | SQL montado com f-string (`/inseguro/busca`) | CWE-89 SQL Injection | Semgrep, ZAP |
 | `subprocess.run(..., shell=True)` com entrada do usuário (`/inseguro/ping`) | CWE-78 Command Injection | Semgrep, ZAP |
-| `eval()` com entrada do usuário (`/inseguro/calc`) | CWE-95 Code Injection | Semgrep |
-| `requests==2.25.1` | Dependência com CVEs | pip-audit, Dependency Review, Trivy |
+| `eval()` com entrada do usuário (`/inseguro/calc`) | CWE-95 Code Injection | Semgrep, ZAP (SSTI blind) |
+| `requests==2.25.1` | Dependência com CVEs | pip-audit, Trivy |
 
 ### Camada extra: GitHub Push Protection 🔐
 
@@ -200,7 +200,15 @@ Findings: 5 (5 blocking)
 
 > Repare que `urllib3` e `idna` **nem estão no requirements.txt**: são dependências transitivas trazidas pelo `requests`. É exatamente o tipo de risco que o SCA encontra e que a revisão manual deixa passar.
 
-**DAST (OWASP ZAP)**: o ZAP importa o `openapi.json`, gera requisições para todos os endpoints e injeta payloads. Por exemplo, `;cat /etc/passwd` no parâmetro `host` devolve `root:x:0:0:...`, o que gera o alerta **Remote OS Command Injection (risco High)** → `FAIL`.
+**DAST (OWASP ZAP)**: o ZAP importou o `openapi.json`, atacou os 33 endpoints/métodos e encontrou **3 alertas High**:
+
+| Risco | Alerta | Endpoint | Evidência |
+|---|---|---|---|
+| 🔴 High | Remote OS Command Injection | `/inseguro/ping` | payload `host&cat /etc/passwd&` devolveu `root:x:0:0` |
+| 🔴 High | SQL Injection | `/inseguro/busca` | `q='` provocou erro do SQLite |
+| 🔴 High | Server Side Template Injection (Blind) | `/inseguro/calc` | payload com `sleep 15` executado via `eval()` |
+
+O `eval()` foi encontrado pelo ZAP como injeção de código por tempo de resposta (*blind*): o ataque mandou o servidor "dormir" 15 segundos e mediu o atraso.
 
 📸 *Evidências:*
 
@@ -211,17 +219,22 @@ Findings: 5 (5 blocking)
 | Semgrep comentando direto no PR | ![Semgrep no PR](docs/evidencias/02-semgrep-findings.png) |
 | Resumo do Semgrep na execução | ![Semgrep summary](docs/evidencias/02b-semgrep-summary.png) |
 | Dependências vulneráveis (pip-audit) | ![pip-audit](docs/evidencias/03-pip-audit.png) |
-| Relatório do ZAP | ![ZAP](docs/evidencias/04-zap-report.png) |
+| Transitivas vulneráveis: `idna` e `urllib3` | ![pip-audit transitivas](docs/evidencias/03b-pip-audit-transitivas.png) |
+| Relatório do ZAP: resumo por risco | ![ZAP](docs/evidencias/04-zap-report.png) |
+| Relatório do ZAP: alertas e evidência | ![ZAP alertas](docs/evidencias/04b-zap-alertas.png) |
 
 ### A pipeline também auditou a si mesma 🔁
 
-Até chegar ao PASS, a pipeline reprovou a própria `main` três vezes, cada uma por um problema real:
+Até chegar ao resultado final, a pipeline revelou quatro problemas reais no próprio processo:
 
 | Ferramenta | O que encontrou | Correção |
 |---|---|---|
 | Semgrep | Actions referenciadas por tag mutável (`@v4`), o mesmo vetor do ataque à trivy-action em 2026 | Todas as actions fixadas por SHA de commit |
 | Semgrep | Dependabot sem período de *cooldown* | `cooldown: 7 dias` e PRs apenas de segurança |
 | Trivy | 6 CVEs HIGH no OpenSSL da imagem base e 4 em bibliotecas embutidas no `pip` | Patches do SO aplicados no build e `pip` removido da imagem final |
+| Revisão do relatório do ZAP | O ZAP encontrou 3 alertas High, mas o job passou: o código de saída da action não refletia o risco | *Gate* explícito que lê o `report_json.json` e reprova qualquer alerta High |
+
+Essa última lição é importante: **uma ferramenta de segurança só protege se o resultado dela bloqueia a entrega**. Rodar o scan não basta, é preciso verificar se o gate está funcionando.
 
 As falhas do Trivy não aparecem no SAST nem no SCA: só são vistas ao analisar a **imagem final**. Isso mostra o valor da defesa em camadas.
 

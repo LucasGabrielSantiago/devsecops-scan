@@ -256,6 +256,29 @@ jobs:
           allow_issue_writing: false
           artifact_name: relatorio-dast-zap
 
+      - name: Gate de risco do DAST (reprova alertas High)
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          if not os.path.exists("report_json.json"):
+              print("::error::Relatório do ZAP não encontrado"); sys.exit(1)
+          dados = json.load(open("report_json.json"))
+          alertas = [a for s in dados.get("site", []) for a in s.get("alerts", [])]
+          nivel = {"3": "🔴 High", "2": "🟠 Medium", "1": "🟡 Low", "0": "🔵 Info"}
+          linhas = ["## 🕷️ DAST — OWASP ZAP", "", "| Risco | Alerta | Endpoint |", "|---|---|---|"]
+          for a in sorted(alertas, key=lambda a: -int(a["riskcode"])):
+              uri = a["instances"][0]["uri"] if a.get("instances") else "-"
+              linhas.append(f"| {nivel.get(a['riskcode'], a['riskcode'])} | {a['name']} | `{uri}` |")
+          altos = [a for a in alertas if a["riskcode"] == "3"]
+          linhas += ["", f"**{len(altos)} alerta(s) High** → " + ("❌ FAIL" if altos else "✅ PASS")]
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write("\n".join(linhas) + "\n")
+          for a in altos:
+              print(f"::error::ZAP High: {a['name']}")
+          sys.exit(1 if altos else 0)
+          PY
+
       - name: Logs da aplicação
         if: always()
         run: docker logs api || true
