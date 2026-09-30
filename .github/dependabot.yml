@@ -1,15 +1,29 @@
-# Mantém atualizados os SHAs das actions, a imagem base e as dependências Python
+# Dependabot: abre PRs apenas para correções de SEGURANÇA
+# (open-pull-requests-limit: 0 desativa os PRs de simples atualização de versão).
+# cooldown: espera 7 dias antes de sugerir uma versão recém-publicada,
+# reduzindo o risco de adotar um pacote malicioso ou quebrado (supply chain).
 version: 2
 updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    open-pull-requests-limit: 0
+    cooldown:
+      default-days: 7
+
   - package-ecosystem: docker
     directory: /
     schedule:
       interval: weekly
+    open-pull-requests-limit: 0
+    cooldown:
+      default-days: 7
+
   - package-ecosystem: pip
     directory: /
     schedule:
       interval: weekly
+    open-pull-requests-limit: 0
+    cooldown:
+      default-days: 7
