@@ -155,3 +155,9 @@ def remover_tarefa(tarefa_id: int) -> Response:
     if cur.rowcount == 0:
         raise HTTPException(status_code=404, detail="Tarefa não encontrada")
     return Response(status_code=204)
+
+
+# --- DEMO: rotas vulneráveis (remover para voltar ao PASS) ---
+from app.rotas_inseguras import router as rotas_inseguras  # noqa: E402
+
+app.include_router(rotas_inseguras)
