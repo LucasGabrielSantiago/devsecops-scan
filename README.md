@@ -152,11 +152,20 @@ O script [`demo/aplicar-falhas.sh`](demo/aplicar-falhas.sh) adiciona:
 
 | Falha injetada | Tipo | Detectada por |
 |---|---|---|
+| Senha hardcoded (`SENHA_ADMIN`) | CWE-798 Credencial no código | revisão de código (má prática ilustrativa) |
 | SQL montado com f-string (`/inseguro/busca`) | CWE-89 SQL Injection | Semgrep, ZAP |
 | `subprocess.run(..., shell=True)` com entrada do usuário (`/inseguro/ping`) | CWE-78 Command Injection | Semgrep, ZAP |
 | `eval()` com entrada do usuário (`/inseguro/calc`) | CWE-95 Code Injection | Semgrep |
 | Chave de API hardcoded | CWE-798 Segredo no código | Semgrep (`p/secrets`), Trivy |
 | `requests==2.19.1` | Dependência com CVEs | pip-audit, Dependency Review, Trivy |
+### Camada extra: GitHub Push Protection 🔐
+
+Na primeira tentativa de push, o código de demonstração tinha uma chave de API no formato Stripe (`sk_live_…`).
+O **GitHub Secret Scanning com Push Protection** recusou o push (`GH013: Push cannot contain secrets`)
+**antes mesmo de a pipeline rodar**: o segredo nunca chegou ao repositório remoto.
+A correção foi remover o segredo e reescrever o commit, e não liberar a exceção.
+
+![Push Protection](docs/evidencias/00-push-protection.png)
 
 ### Resultado obtido — cenário FAIL ❌
 
